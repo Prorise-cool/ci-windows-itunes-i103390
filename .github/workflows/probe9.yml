@@ -1,0 +1,68 @@
+name: win-itunes-appleid-p9
+on:
+  workflow_dispatch:
+jobs:
+  probe9:
+    runs-on: windows-2022
+    timeout-minutes: 28
+    steps:
+      - uses: actions/checkout@v4
+      - name: env-info
+        shell: pwsh
+        run: |
+          Get-CimInstance Win32_ComputerSystem | Select-Object Manufacturer,Model,HypervisorPresent | Format-List
+          Get-ComputerInfo | Select-Object WindowsProductName,OsVersion,CsManufacturer,CsModel | Format-List
+          whoami; query session; python --version
+      - name: install-itunes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Continue'
+          function Find-I { foreach($p in @('C:\Program Files\iTunes\iTunes.exe','C:\Program Files (x86)\iTunes\iTunes.exe')){ if(Test-Path $p){ return $p } }; return $null }
+          $exe = Find-I
+          if(-not $exe){
+            Write-Output '--- winget ---'
+            winget install --id Apple.iTunes --silent --accept-package-agreements --accept-source-agreements --disable-interactivity 2>&1 | Tee-Object -Append install.log
+            Start-Sleep 5; $exe = Find-I
+          }
+          if(-not $exe){
+            Write-Output '--- choco ---'
+            choco install itunes -y --no-progress 2>&1 | Tee-Object -Append install.log
+            Start-Sleep 5; $exe = Find-I
+          }
+          if(-not $exe){
+            Write-Output '--- official installer ---'
+            try { Invoke-WebRequest -Uri 'https://www.apple.com/itunes/download/win64' -OutFile iTunes64Setup.exe -UseBasicParsing -MaximumRedirection 10 } catch { Write-Output $_ }
+            if(Test-Path iTunes64Setup.exe){ Get-Item iTunes64Setup.exe | Select-Object Name,Length | Format-List; Start-Process .\iTunes64Setup.exe -ArgumentList '/quiet','/norestart' -Wait; Start-Sleep 12; $exe = Find-I }
+          }
+          if(-not $exe){
+            Write-Output '--- 7z extract msi ---'
+            $z = 'C:\Program Files\7-Zip\7z.exe'
+            if((Test-Path iTunes64Setup.exe) -and (Test-Path $z)){
+              & $z x -y -oiTunesExtract iTunes64Setup.exe 2>&1 | Tee-Object -Append install.log
+              Get-ChildItem iTunesExtract -Recurse -Filter *.msi | Select-Object FullName,Length | Format-List
+              foreach($m in @('AppleApplicationSupport64.msi','AppleMobileDeviceSupport64.msi','Bonjour64.msi','iTunes64.msi')){
+                $f = Get-ChildItem iTunesExtract -Recurse -Filter $m | Select-Object -First 1
+                if($f){ Start-Process msiexec.exe -ArgumentList '/i',"`"$($f.FullName)`"",'/qn','/norestart' -Wait }
+              }
+              Start-Sleep 12; $exe = Find-I
+            }
+          }
+          Write-Output "ITUNES_EXE=$exe"
+          if($exe){ (Get-Item $exe).VersionInfo | Format-List | Out-String | Write-Output }
+          Get-ChildItem 'C:\Program Files' -ErrorAction SilentlyContinue | Select-Object Name | Out-String | Write-Output
+      - name: deps
+        shell: pwsh
+        run: python -m pip install --quiet pywinauto pillow 2>&1 | Tee-Object -Append install.log
+      - name: probe
+        shell: pwsh
+        run: |
+          python probe9.py 2>&1 | Tee-Object -FilePath probe.log
+          Get-ChildItem out -ErrorAction SilentlyContinue | Select-Object Name,Length | Format-List
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: win-itunes-evidence9
+          path: |
+            out
+            install.log
+            probe.log
